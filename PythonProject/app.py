@@ -43,7 +43,6 @@ def safe_download(ticker, period="5y", interval="1d"):
         logging.error(f"Download error for {ticker}: {e}")
         return pd.DataFrame()
 
-
 # ======================== AUTH ROUTES ========================
 @app.route("/")
 def index():
@@ -84,7 +83,6 @@ def register():
 def logout():
     session.pop("user", None)
     return redirect(url_for("login"))
-
 
 # ======================== DASHBOARD ========================
 @app.route("/dashboard", methods=["GET"])
@@ -197,6 +195,14 @@ def dashboard():
 
 # ======================== RUN APP ========================
 if __name__ == "__main__":
-    # ✅ Works both locally and on Render
+    # ✅ Automatically handles both local + Render environments
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    host = "0.0.0.0"
+
+    # If running under Gunicorn, Flask won't call this block — safe fallback
+    try:
+        from gunicorn.app.wsgiapp import run
+        print("🔧 Running with Gunicorn (if available)...")
+    except ImportError:
+        print("⚙️ Running with Flask's built-in server...")
+        app.run(host=host, port=port, debug=True)
