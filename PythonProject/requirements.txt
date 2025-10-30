@@ -1,7 +1,9 @@
-flask
-gunicorn
-numpy
-pandas
-scikit-learn
+Flask>=2.0
 yfinance
+pandas
+numpy
 matplotlib
+plotly
+scikit-learn
+werkzeug
+gunicorn
