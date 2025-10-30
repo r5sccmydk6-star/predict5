@@ -1,136 +1,200 @@
-from flask import Flask, render_template_string, request
+from flask import Flask, render_template, request, redirect, url_for, session
 import yfinance as yf
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.linear_model import LinearRegression
-import io, base64, os
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import io, base64, logging, traceback, os
 
 app = Flask(__name__)
+app.secret_key = "your_secret_key_here"
 
-# ---------------- HTML Template ----------------
-HTML = """ 
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Stock Dashboard | AI Prediction</title>
-<style>
-  body { font-family: 'Segoe UI', Arial; background: #0d1117; color: #e6edf3; margin: 0; }
-  header { background: #161b22; padding: 20px; text-align: center; color: #58a6ff; font-size: 28px; }
-  .container { max-width: 950px; margin: 40px auto; background: #161b22; padding: 30px; border-radius: 12px; box-shadow: 0 0 25px rgba(0,0,0,0.4); }
-  input[type=text] { width: 70%; padding: 12px; border: none; border-radius: 6px; background: #21262d; color: #fff; }
-  button { padding: 12px 20px; border: none; border-radius: 6px; background: #238636; color: white; cursor: pointer; }
-  button:hover { background: #2ea043; }
-  img { width: 100%; border-radius: 10px; margin-top: 25px; box-shadow: 0 0 10px rgba(0,0,0,0.6); }
-  .price-box { text-align: center; margin-top: 25px; }
-  .price { font-size: 48px; font-weight: bold; }
-  .change { font-size: 20px; }
-  .up { color: #00ff7f; }
-  .down { color: #f85149; }
-  .stable { color: #ccc; }
-  .pred-box { margin-top: 30px; text-align: center; background: #21262d; padding: 20px; border-radius: 10px; }
-  .pred { font-size: 22px; color: #ffcc00; }
-  .note { text-align: center; color: #8b949e; margin-top: 15px; font-size: 13px; }
-</style>
-</head>
-<body>
-<header>📈 AI Stock Dashboard</header>
-<div class="container" style="text-align:center;">
-  <form method="post">
-    <input type="text" name="ticker" placeholder="Enter Stock Symbol (e.g. TSLA, AAPL)" required>
-    <button type="submit">Analyze</button>
-  </form>
+# -------- Simple In-Memory User Storage --------
+users = {"admin": "admin123"}  # default user
 
-  {% if error %}
-    <p style="color:#f85149;">{{ error }}</p>
-  {% endif %}
+# -------- Logging setup --------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.FileHandler("error.log"), logging.StreamHandler()]
+)
 
-  {% if name %}
-  <div class="price-box">
-    <h2>{{ name }} ({{ ticker }})</h2>
-    <div class="price">${{ price }}</div>
-    <div class="change {% if trend == 'up' %}up{% elif trend == 'down' %}down{% else %}stable{% endif %}">
-      {% if trend == 'up' %}+{% endif %}{{ change }} ({{ change_percent }}%)
-    </div>
-  </div>
+# -------- RSI Calculation --------
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(window=period).mean()
+    loss = (-delta.clip(upper=0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
-  <div class="pred-box">
-    <p class="pred">🔮 Predicted Tomorrow's Close: <b>${{ predicted_price }}</b></p>
-  </div>
+# -------- Download Data Safely --------
+def safe_download(ticker, period="5y", interval="1d"):
+    try:
+        data = yf.download(ticker, period=period, interval=interval, progress=False, threads=False)
+        if data is None or data.empty:
+            data = yf.download(ticker + ".NS", period=period, interval=interval, progress=False, threads=False)
+        return data.dropna() if data is not None else pd.DataFrame()
+    except Exception as e:
+        logging.error(f"Download error for {ticker}: {e}")
+        return pd.DataFrame()
 
-  <img src="data:image/png;base64,{{ plot_url }}">
-  <div class="note">5-Year Historical Stock Price (AI Linear Regression Prediction for Next Day)</div>
-  {% endif %}
-</div>
-</body>
-</html>
-"""
 
-# ---------------- Flask Logic ----------------
-@app.route("/", methods=["GET", "POST"])
+# ======================== AUTH ROUTES ========================
+@app.route("/")
 def index():
-    name = ticker = plot_url = None
-    price = change = change_percent = predicted_price = 0
-    trend = "stable"
+    if "user" in session:
+        return redirect(url_for("dashboard"))
+    return redirect(url_for("login"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
     error = None
-
     if request.method == "POST":
-        ticker = request.form["ticker"].upper()
+        username = request.form["username"]
+        password = request.form["password"]
+        if username in users and users[username] == password:
+            session["user"] = username
+            return redirect(url_for("dashboard"))
+        else:
+            error = "Invalid username or password."
+    return render_template("login.html", error=error)
 
-        try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period="5y")
 
-            if hist.empty:
-                error = f"No data found for '{ticker}'."
-            else:
-                latest = hist["Close"].iloc[-1]
-                prev = hist["Close"].iloc[-2]
-                price = round(float(latest), 2)
-                change = round(float(latest - prev), 2)
-                change_percent = round((change / prev) * 100, 2)
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    error = None
+    if request.method == "POST":
+        username = request.form["username"]
+        password = request.form["password"]
+        if username in users:
+            error = "Username already exists."
+        else:
+            users[username] = password
+            return redirect(url_for("login"))
+    return render_template("register.html", error=error)
 
-                trend = "up" if change > 0 else "down" if change < 0 else "stable"
 
-                hist["Days"] = np.arange(len(hist))
-                X = hist[["Days"]]
-                y = hist["Close"]
-                model = LinearRegression().fit(X, y)
-                tomorrow_day = np.array([[len(hist) + 1]])
-                predicted_price = round(float(model.predict(tomorrow_day)[0]), 2)
+@app.route("/logout")
+def logout():
+    session.pop("user", None)
+    return redirect(url_for("login"))
 
-                plt.style.use("dark_background")
-                fig, ax = plt.subplots(figsize=(9, 4))
-                ax.plot(hist.index, hist["Close"], color="#00bfff", linewidth=1.8, label="Close Price")
-                ax.plot(hist.index, model.predict(X), color="#ffcc00", linestyle="--", linewidth=1.2, label="Trend (LR)")
-                ax.fill_between(hist.index, hist["Close"], color="#00bfff", alpha=0.1)
-                ax.set_facecolor("#0d1117")
-                ax.grid(color="#2f353e", linestyle="--", linewidth=0.5)
-                ax.set_title(f"{ticker} - 5 Year Price Trend", color="#58a6ff", fontsize=14)
-                ax.tick_params(axis="x", colors="#9ba3b0")
-                ax.tick_params(axis="y", colors="#9ba3b0")
-                ax.legend(facecolor="#161b22", labelcolor="#e6edf3")
-                plt.tight_layout()
 
-                buf = io.BytesIO()
-                plt.savefig(buf, format="png", dpi=150)
-                buf.seek(0)
-                plot_url = base64.b64encode(buf.getvalue()).decode()
-                buf.close()
-                plt.close()
+# ======================== DASHBOARD ========================
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    if "user" not in session:
+        return redirect(url_for("login"))
 
-                name = stock.info.get("shortName", ticker)
+    ticker = request.args.get("ticker", "").strip().upper()
+    algo = request.args.get("algo", "Linear Regression")
 
-        except Exception as e:
-            error = f"⚠️ Error: {str(e)}"
+    if not ticker:
+        return render_template("dashboard.html", username=session["user"])
 
-    return render_template_string(HTML, name=name, ticker=ticker, price=price,
-                                  change=change, change_percent=change_percent,
-                                  trend=trend, predicted_price=predicted_price,
-                                  plot_url=plot_url, error=error)
+    try:
+        # Step 1: Download data
+        data = safe_download(ticker)
+        if data.empty:
+            return render_template("dashboard.html", username=session["user"], error="No data found.")
 
-# ✅ Important fix for Render deployment
+        if len(data) < 60:
+            return render_template("dashboard.html", username=session["user"], error="Not enough data to train model.")
+
+        # Step 2: Indicators
+        data["RSI"] = compute_rsi(data["Close"])
+        data["MA20"] = data["Close"].rolling(window=20).mean()
+        data["EMA20"] = data["Close"].ewm(span=20, adjust=False).mean()
+        data.dropna(inplace=True)
+
+        # Step 3: Features
+        X = data[["Open", "High", "Low", "Volume", "RSI", "MA20", "EMA20"]]
+        y = data["Close"]
+
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        # Step 4: Choose Algorithm
+        if algo == "Decision Tree":
+            model = DecisionTreeRegressor(random_state=42)
+        elif algo == "Random Forest":
+            model = RandomForestRegressor(n_estimators=100, random_state=42)
+        else:
+            model = LinearRegression()
+
+        # Step 5: Train
+        model.fit(X_train, y_train)
+        pred = model.predict(X_test)
+        y_test = np.array(y_test).flatten()
+        pred = np.array(pred).flatten()
+
+        # Step 6: Plot
+        plt.figure(figsize=(10, 5))
+        plt.plot(y_test[:100], label="Actual", color="skyblue")
+        plt.plot(pred[:100], label="Predicted", color="orange")
+        plt.legend()
+        plt.title(f"{ticker} Prediction ({algo})")
+        plt.tight_layout()
+
+        img = io.BytesIO()
+        plt.savefig(img, format="png")
+        img.seek(0)
+        plot_url = base64.b64encode(img.getvalue()).decode()
+        plt.close()
+
+        # Step 7: Next Day Prediction
+        next_day_pred = float(model.predict(X.iloc[-1].values.reshape(1, -1))[0])
+        current_price = float(y.iloc[-1])
+        diff = next_day_pred - current_price
+        direction = "rise" if diff > 0 else "fall"
+
+        conclusion = f"Predicted next-day close: ${next_day_pred:.2f}. Current: ${current_price:.2f}. Expected {direction} of ${abs(diff):.2f}."
+
+        # Advice + Warning
+        crash_threshold = current_price * 0.95
+        warning = None
+        if next_day_pred < crash_threshold:
+            warning = "⚠️ Model predicts a 5%+ drop! Consider holding or selling."
+
+        if diff > 0:
+            advice_class = "safe"
+            advice_text = "🟢 Safe to Buy — Uptrend expected!"
+        else:
+            advice_class = "risky"
+            advice_text = "🔴 Risky to Buy — Possible downtrend ahead."
+
+        # Summary
+        avg_actual = float(np.mean(y_test[-10:]))
+        avg_pred = float(np.mean(pred[-10:]))
+        accuracy = 100 - (abs(avg_actual - avg_pred) / avg_actual * 100)
+        summary = f"📊 Model: {algo} | Accuracy ≈ {accuracy:.2f}%"
+
+        table_data = list(zip(y_test[-10:], pred[-10:]))
+
+        return render_template(
+            "dashboard.html",
+            username=session["user"],
+            ticker=ticker,
+            algo=algo,
+            plot_url=plot_url,
+            conclusion=conclusion,
+            warning=warning,
+            advice_text=advice_text,
+            advice_class=advice_class,
+            summary=summary,
+            table_data=table_data
+        )
+
+    except Exception as e:
+        logging.error(traceback.format_exc())
+        return render_template("dashboard.html", username=session["user"], error=str(e))
+
+
+# ======================== RUN APP ========================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(debug=True)
