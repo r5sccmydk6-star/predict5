@@ -147,9 +147,9 @@ def dashboard():
         plot_url = base64.b64encode(img.getvalue()).decode()
         plt.close()
 
-        # Step 7: Next Day Prediction
-        next_day_pred = float(model.predict(X.iloc[-1].values.reshape(1, -1))[0])
-        current_price = float(y.iloc[-1])
+        # Step 7: Next Day Prediction (⚙️ Fixed lines below)
+        next_day_pred = float(model.predict(X.iloc[-1].values.reshape(1, -1))[0].item())
+        current_price = float(y.iloc[-1].item())
         diff = next_day_pred - current_price
         direction = "rise" if diff > 0 else "fall"
 
@@ -195,7 +195,6 @@ def dashboard():
         return render_template("dashboard.html", username=session["user"], error=str(e))
 
 
-# ======================== RUN APP (Render Fix) ========================
+# ======================== RUN APP ========================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # Render provides this port
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=10000, debug=True)
