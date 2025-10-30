@@ -43,6 +43,7 @@ def safe_download(ticker, period="5y", interval="1d"):
         logging.error(f"Download error for {ticker}: {e}")
         return pd.DataFrame()
 
+
 # ======================== AUTH ROUTES ========================
 @app.route("/")
 def index():
@@ -84,6 +85,7 @@ def logout():
     session.pop("user", None)
     return redirect(url_for("login"))
 
+
 # ======================== DASHBOARD ========================
 @app.route("/dashboard", methods=["GET"])
 def dashboard():
@@ -97,7 +99,6 @@ def dashboard():
         return render_template("dashboard.html", username=session["user"])
 
     try:
-        # Step 1: Download data
         data = safe_download(ticker)
         if data.empty:
             return render_template("dashboard.html", username=session["user"], error="No data found.")
@@ -105,19 +106,16 @@ def dashboard():
         if len(data) < 60:
             return render_template("dashboard.html", username=session["user"], error="Not enough data to train model.")
 
-        # Step 2: Indicators
         data["RSI"] = compute_rsi(data["Close"])
         data["MA20"] = data["Close"].rolling(window=20).mean()
         data["EMA20"] = data["Close"].ewm(span=20, adjust=False).mean()
         data.dropna(inplace=True)
 
-        # Step 3: Features
         X = data[["Open", "High", "Low", "Volume", "RSI", "MA20", "EMA20"]]
         y = data["Close"]
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        # Step 4: Choose Algorithm
         if algo == "Decision Tree":
             model = DecisionTreeRegressor(random_state=42)
         elif algo == "Random Forest":
@@ -125,13 +123,11 @@ def dashboard():
         else:
             model = LinearRegression()
 
-        # Step 5: Train
         model.fit(X_train, y_train)
         pred = model.predict(X_test)
         y_test = np.array(y_test).flatten()
         pred = np.array(pred).flatten()
 
-        # Step 6: Plot
         plt.figure(figsize=(10, 5))
         plt.plot(y_test[:100], label="Actual", color="skyblue")
         plt.plot(pred[:100], label="Predicted", color="orange")
@@ -145,7 +141,6 @@ def dashboard():
         plot_url = base64.b64encode(img.getvalue()).decode()
         plt.close()
 
-        # Step 7: Next Day Prediction
         next_day_pred = float(model.predict(X.iloc[-1].values.reshape(1, -1))[0])
         current_price = float(y.iloc[-1])
         diff = next_day_pred - current_price
@@ -153,7 +148,6 @@ def dashboard():
 
         conclusion = f"Predicted next-day close: ${next_day_pred:.2f}. Current: ${current_price:.2f}. Expected {direction} of ${abs(diff):.2f}."
 
-        # Advice + Warning
         crash_threshold = current_price * 0.95
         warning = None
         if next_day_pred < crash_threshold:
@@ -166,7 +160,6 @@ def dashboard():
             advice_class = "risky"
             advice_text = "🔴 Risky to Buy — Possible downtrend ahead."
 
-        # Summary
         avg_actual = float(np.mean(y_test[-10:]))
         avg_pred = float(np.mean(pred[-10:]))
         accuracy = 100 - (abs(avg_actual - avg_pred) / avg_actual * 100)
@@ -195,14 +188,6 @@ def dashboard():
 
 # ======================== RUN APP ========================
 if __name__ == "__main__":
-    # ✅ Automatically handles both local + Render environments
+    # ✅ Correct Render-friendly configuration
     port = int(os.environ.get("PORT", 10000))
-    host = "0.0.0.0"
-
-    # If running under Gunicorn, Flask won't call this block — safe fallback
-    try:
-        from gunicorn.app.wsgiapp import run
-        print("🔧 Running with Gunicorn (if available)...")
-    except ImportError:
-        print("⚙️ Running with Flask's built-in server...")
-        app.run(host=host, port=port, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=False)
